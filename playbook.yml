@@ -1,0 +1,80 @@
+- hosts: localhost
+  vars_files:
+    - var.yml
+
+  tasks: 
+    - name: AWS | Create SG
+      ec2_group:
+        name: "{{ security_group_name }}"
+        description: "{{ security_group_name }}"
+        state: present
+        vpc_id: vpc-02619967
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+              - 80
+            cidr_ip: 0.0.0.0/0
+      register: sg
+
+    - name: AWS | Launch instance
+      ec2:
+        key_name: "{{ key }}"
+        image: "{{ image }}"
+        wait: yes
+        type: "{{ type }}"
+        count: 1
+        group_id: "{{ sg.group_id }}"
+        vpc_subnet_id: "{{ subnet }}"
+        assign_public_ip: yes
+        region: "{{ region }}"
+        instance_tags:
+          Name: "{{ instance_name }}"
+        volumes:
+        - device_name: /dev/sda1        
+          volume_size: 15
+          delete_on_termination: true      
+      register: machine     
+  
+    - name: AWS | Service ssh up
+      wait_for:
+        host: "{{ item.public_ip }}"
+        port: 22
+        timeout: 600
+        state: started
+      with_items: "{{ machine.instances }}"
+    
+    - name: AWS | Attach volume
+      ec2_vol:
+        name: "{{ ebs }}"
+        device_name: /dev/sdf
+        volume_type: gp2
+        delete_on_termination: no
+        instance: "{{ item.id }}"
+        volume_size: 8
+        region: "{{ region }}"
+      with_items: "{{ machine.instances }}"
+      register: vol
+
+    - name: Associate an elastic IP with an instance
+      ec2_eip:
+        device_id: "{{ item.id }}"
+        ip: "{{ elastic_ip }}"
+        in_vpc: yes
+        reuse_existing_ip_allowed: yes
+        region: "{{ region }}"
+      with_items: "{{ machine.instances }}"
+      
+    - name: AWS | Add instance for host
+      add_host:
+        hostname: "{{ elastic_ip }}"
+        groupname: docker
+    
+
+- name: AWS | Provision  instance
+  hosts: docker
+  become: True
+  gather_facts: True
+  roles:
+    - ansible-role-install-docker
+    
